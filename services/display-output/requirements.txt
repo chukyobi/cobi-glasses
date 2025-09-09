@@ -1,0 +1,4 @@
+# Placeholder - service not yet implemented
+# Common dependencies that might be needed:
+# fastapi
+# uvicorn

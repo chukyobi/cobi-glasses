@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  audio-capture:
+    build: ./services/audio-capture
+    container_name: audio_capture
+    volumes:
+      - ./shared:/app/shared
+    restart: always
+
+  sound-classifier:
+    build: ./services/sound-classifier
+    container_name: sound_classifier
+    volumes:
+      - ./shared:/app/shared
+    restart: always
+
+  stt-transcriber:
+    build: ./services/stt-transcriber
+    container_name: stt_transcriber
+    volumes:
+      - ./shared:/app/shared
+    restart: always
