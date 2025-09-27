@@ -1,4 +1,3 @@
-# services/audio-capture/client.py
 import asyncio
 import json
 import logging
@@ -14,13 +13,12 @@ import websockets
 # ---------- Settings ----------
 SAMPLE_RATE = 16000
 CHANNELS = 1
-BLOCK_DURATION = 0.2  # seconds, 200ms blocks are a good balance
+BLOCK_DURATION = 0.1  # Lowered for better real-time
 DTYPE = "int16"
 
 CLASSIFIER_WS_URL = "ws://localhost:8001/classify"
 TRANSCRIBE_WS_URL = "ws://localhost:8002/transcribe"
 
-# If you want to print how loud the block is (debug)
 PRINT_ENERGY = False
 # ------------------------------
 
@@ -30,13 +28,9 @@ stop_flag = False
 def audio_callback(indata, frames, time, status):
     if status:
         logging.warning(f"InputStream status: {status}")
-    # Make a copy, push to thread-safe queue
     audio_q.put(indata.copy())
 
 async def reader_task(ws_transcribe):
-    """
-    Read messages (partial/final transcripts) from transcription service and print them.
-    """
     try:
         async for msg in ws_transcribe:
             try:
@@ -52,20 +46,29 @@ async def reader_task(ws_transcribe):
     except Exception as e:
         logging.error(f"Reader task error: {e}")
 
+async def process_block(block, ws_classifier, ws_transcribe):
+    try:
+        await ws_classifier.send(block.tobytes())
+        cls_msg = await ws_classifier.recv()
+        cls = json.loads(cls_msg)
+        label = cls.get("label", "non-speech")
+
+        if label == "speech":
+            await ws_transcribe.send(block.tobytes())
+    except Exception as e:
+        logging.error(f"Block processing error: {e}")
+
 async def main():
     global stop_flag
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     logging.info("Starting audio-capture client. Ctrl+C to stop.")
 
-    # Connect websockets
     async with websockets.connect(CLASSIFIER_WS_URL, max_size=None) as ws_classifier, \
                websockets.connect(TRANSCRIBE_WS_URL, max_size=None) as ws_transcribe:
 
-        # Kick off a task to read transcripts
         reader = asyncio.create_task(reader_task(ws_transcribe))
 
-        # Setup sounddevice stream
         blocksize = int(SAMPLE_RATE * BLOCK_DURATION)
         stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -86,12 +89,10 @@ async def main():
             try:
                 loop.add_signal_handler(sig, handle_sigint)
             except NotImplementedError:
-                # Windows
                 pass
 
         try:
             while not stop_flag:
-                # Pull a block from the queue (200ms of int16 PCM)
                 block = await loop.run_in_executor(None, audio_q.get)
                 if block is None:
                     continue
@@ -100,26 +101,12 @@ async def main():
                     energy = float(np.mean(block.astype(np.float32) ** 2))
                     print(f"\n[energy] {energy:.1f}")
 
-                # Send block to classifier
-                await ws_classifier.send(block.tobytes())
-                cls_msg = await ws_classifier.recv()
-                cls = json.loads(cls_msg)
-                label = cls.get("label", "non-speech")
-
-                if label == "speech":
-                    # Forward same PCM block to the transcription service
-                    await ws_transcribe.send(block.tobytes())
-                else:
-                    # Optionally notify transcription service that this is silence
-                    # (not required, but you can send a small control json if you implement it on server)
-                    pass
-
-                await asyncio.sleep(0)  # yield
+                asyncio.create_task(process_block(block, ws_classifier, ws_transcribe))
+                await asyncio.sleep(0)
 
         finally:
             stream.stop()
             stream.close()
-            # Graceful close of transcription websocket (signal end of stream)
             try:
                 await ws_transcribe.send(json.dumps({"event": "eos"}))
             except Exception:

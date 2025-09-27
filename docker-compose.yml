@@ -14,9 +14,9 @@ services:
       - ./shared:/app/shared
     restart: always
 
-  stt-transcriber:
-    build: ./services/stt-transcriber
-    container_name: stt_transcriber
+  transcription-service:
+    build: ./services/transcription-service
+    container_name: transcription_service
     volumes:
       - ./shared:/app/shared
     restart: always

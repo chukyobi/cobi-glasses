@@ -1,12 +1,3 @@
-"""
-service/remote_stt_server.py
-
-A minimal STT websocket server that loads a larger Whisper model on GPU (device='cuda')
-and transcribes incoming PCM bytes streaming back partial/final JSON messages.
-
-This should run on a more powerful server (GPU) for online mode.
-"""
-
 import asyncio
 import json
 import os
@@ -15,14 +6,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-# faster-whisper
 from faster_whisper import WhisperModel
 
 SAMPLE_RATE = 16000
 DTYPE = np.int16
 
-MODEL_NAME = os.environ.get("REMOTE_MODEL", "base.en")  # choose a larger model on GPU
-DEVICE = os.environ.get("REMOTE_DEVICE", "cuda")       # 'cuda' on GPU server
+MODEL_NAME = os.environ.get("REMOTE_MODEL", "small")
+DEVICE = os.environ.get("REMOTE_DEVICE", "cuda")
 BEAM_SIZE = int(os.environ.get("BEAM_SIZE", "5"))
 
 app = FastAPI()
@@ -33,7 +23,6 @@ app.add_middleware(
 print(f"[remote_stt] loading model {MODEL_NAME} on {DEVICE} ...")
 model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type="float16" if DEVICE == "cuda" else "int8")
 print("[remote_stt] model loaded")
-
 
 @app.websocket("/transcribe")
 async def ws_transcribe(ws: WebSocket):
@@ -50,8 +39,8 @@ async def ws_transcribe(ws: WebSocket):
                     arr = np.frombuffer(chunk, dtype=DTYPE)
                     if arr.size > 0:
                         buf = np.concatenate([buf, arr])
-                    # simple streaming policy: when buffer > 1.5s, do a partial decode
-                    if buf.size >= int(1.5 * SAMPLE_RATE):
+                    # Use a 2-second buffer for partial decode
+                    if buf.size >= int(2.0 * SAMPLE_RATE):
                         audio_float = (buf.astype(np.float32) / 32768.0)
                         def _transcribe():
                             segments, _ = model.transcribe(audio_float, beam_size=BEAM_SIZE, language="en")
@@ -60,12 +49,9 @@ async def ws_transcribe(ws: WebSocket):
                         texts = await loop.run_in_executor(None, _transcribe)
                         combined = " ".join(texts).strip()
                         await ws.send_text(json.dumps({"partial": combined}))
-                        # retain last second for overlap
+                        # Retain last 1 second for overlap
                         overlap = int(1.0 * SAMPLE_RATE)
-                        if buf.size > overlap:
-                            buf = buf[-overlap:]
-                        else:
-                            buf = np.zeros((0,), dtype=DTYPE)
+                        buf = buf[-overlap:] if buf.size > overlap else np.zeros((0,), dtype=DTYPE)
 
                 elif "text" in msg:
                     try:
@@ -93,6 +79,5 @@ async def ws_transcribe(ws: WebSocket):
         except Exception:
             pass
 
-
 if __name__ == "__main__":
-    uvicorn.run("remote_stt_server:app", host="0.0.0.0", port=9002, log_level="info")
+    uvicorn.run("remote_stt:app", host="0.0.0.0", port=8002, log_level="info")
