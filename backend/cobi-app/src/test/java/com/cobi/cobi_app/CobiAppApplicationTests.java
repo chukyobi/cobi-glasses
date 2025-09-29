@@ -1,10 +1,10 @@
-package com.cobi.cobi_glasses_backend;
+package com.cobi.cobi_app;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class CobiGlassesBackendApplicationTests {
+class CobiAppApplicationTests {
 
 	@Test
 	void contextLoads() {

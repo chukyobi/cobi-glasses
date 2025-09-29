@@ -1,13 +1,13 @@
-package com.cobi.cobi_glasses_backend;
+package com.cobi.cobi_app;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class CobiGlassesBackendApplication {
+public class CobiAppApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(CobiGlassesBackendApplication.class, args);
+		SpringApplication.run(CobiAppApplication.class, args);
 	}
 
 }
