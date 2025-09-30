@@ -8,5 +8,10 @@
     "name": "sendgrid.api.key",
     "type": "java.lang.String",
     "description": "A description for 'sendgrid.api.key'"
+  },
+  {
+    "name": "sendgrid.ssl.verification",
+    "type": "java.lang.String",
+    "description": "A description for 'sendgrid.ssl.verification'"
   }
 ]}
