@@ -1,10 +1,14 @@
+
 version: '3.8'
+
 services:
   audio-capture:
     build: ./services/audio-capture
     container_name: audio_capture
     volumes:
       - ./shared:/app/shared
+    env_file:
+      - .env
     restart: always
 
   sound-classifier:
@@ -12,6 +16,8 @@ services:
     container_name: sound_classifier
     volumes:
       - ./shared:/app/shared
+    env_file:
+      - .env
     restart: always
 
   transcription-service:
@@ -19,4 +25,15 @@ services:
     container_name: transcription_service
     volumes:
       - ./shared:/app/shared
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    depends_on:
+      - audio-capture
     restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

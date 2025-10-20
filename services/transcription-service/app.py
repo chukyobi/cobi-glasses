@@ -1,22 +1,24 @@
 import asyncio
 import json
 import os
-from typing import Optional
 import multiprocessing as mp
-
+import logging
+from typing import Optional
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-import whisper
+from faster_whisper import WhisperModel
+import webrtcvad
 
-# Config
-SAMPLE_RATE = 16000
-DTYPE = np.int16
-MODEL_NAME = os.environ.get("WHISPER_MODEL_NAME", "base")
-
-MODE = "offline"
+# Import shared configuration
+from shared.config.audio_config import SAMPLE_RATE, DTYPE, MODEL_NAME
+MODE = "offline"  # Can be "offline" or "cloud"
 mode_lock = asyncio.Lock()
+translate_enabled = mp.Value('b', False)  # Shared flag for translation toggle
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 app = FastAPI()
 app.add_middleware(
@@ -24,10 +26,20 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
-def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: str):
+# Initialize VAD
+vad = webrtcvad.Vad(2)
+
+def is_speech(audio_chunk: bytes) -> bool:
+    frame_duration_ms = 30
+    bytes_per_frame = int(SAMPLE_RATE * frame_duration_ms / 1000) * 2
+    if len(audio_chunk) < bytes_per_frame:
+        return False
+    return vad.is_speech(audio_chunk[:bytes_per_frame], SAMPLE_RATE)
+
+def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: str, translate_flag: mp.Value):
     try:
-        print(f"[worker] Loading Whisper model '{model_name}' (PID: {os.getpid()})")
-        model = whisper.load_model(model_name)
+        print(f"[worker] Loading Faster-Whisper model '{model_name}' (PID: {os.getpid()})")
+        model = WhisperModel(model_name, device="cpu")
         print("[worker] Model loaded")
 
         buf = np.zeros((0,), dtype=DTYPE)
@@ -47,8 +59,10 @@ def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: st
                 if buf.size >= MIN_SAMPLES:
                     try:
                         audio = buf.astype(np.float32) / 32768.0
-                        result = model.transcribe(audio, language="en")
-                        output_q.put(json.dumps({"final": result["text"]}))
+                        task_type = "translate" if translate_flag.value else "transcribe"
+                        segments, info = model.transcribe(audio, task=task_type)
+                        text = " ".join([seg.text for seg in segments])
+                        output_q.put(json.dumps({"final": text, "language": info.language}))
                     except Exception as e:
                         output_q.put(json.dumps({"error": f"final transcription error: {str(e)}"}))
                 break
@@ -61,8 +75,10 @@ def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: st
             if buf.size >= int(PARTIAL_SECONDS * SAMPLE_RATE):
                 try:
                     audio = buf.astype(np.float32) / 32768.0
-                    result = model.transcribe(audio, language="en")
-                    output_q.put(json.dumps({"partial": result["text"]}))
+                    task_type = "translate" if translate_flag.value else "transcribe"
+                    segments, info = model.transcribe(audio, task=task_type)
+                    text = " ".join([seg.text for seg in segments])
+                    output_q.put(json.dumps({"partial": text, "language": info.language}))
                 except Exception as e:
                     output_q.put(json.dumps({"error": f"partial transcription error: {str(e)}"}))
 
@@ -96,7 +112,7 @@ async def websocket_transcribe(ws: WebSocket):
             output_q_mp = mp.Queue(maxsize=32)
             worker_process = mp.Process(
                 target=offline_worker_process,
-                args=(input_q_mp, output_q_mp, MODEL_NAME),
+                args=(input_q_mp, output_q_mp, MODEL_NAME, translate_enabled),
                 daemon=True,
             )
             worker_process.start()
@@ -106,12 +122,17 @@ async def websocket_transcribe(ws: WebSocket):
                 while True:
                     try:
                         item = await loop.run_in_executor(None, output_q_mp.get)
-                    except Exception:
+                    except Exception as e:
+                        logging.error(f"Output queue polling error: {e}")
                         break
                     if item:
                         await ws.send_text(item)
 
             output_task = asyncio.create_task(poll_output_queue())
+
+        elif current_mode == "cloud":
+            logging.info("Cloud transcription mode is not yet implemented.")
+            await ws.send_text(json.dumps({"info": "Cloud transcription mode is not yet available."}))
 
         while True:
             msg = await ws.receive()
@@ -119,7 +140,8 @@ async def websocket_transcribe(ws: WebSocket):
             if msg["type"] == "websocket.receive":
                 if "bytes" in msg:
                     chunk = msg["bytes"]
-                    await asyncio.get_running_loop().run_in_executor(None, lambda q, c: q.put(c), input_q_mp, chunk)
+                    if is_speech(chunk):
+                        await asyncio.get_running_loop().run_in_executor(None, lambda q, c: q.put(c), input_q_mp, chunk)
                 elif "text" in msg:
                     try:
                         data = json.loads(msg["text"])
@@ -129,18 +151,27 @@ async def websocket_transcribe(ws: WebSocket):
                             if worker_process:
                                 worker_process.join(timeout=2.0)
                             break
-                    except json.JSONDecodeError:
-                        pass
+                        elif data.get("event") == "toggle_translate":
+                            translate_enabled.value = bool(data.get("enabled", False))
+                            await ws.send_text(json.dumps({"info": f"Translation {'enabled' if translate_enabled.value else 'disabled'}"}))
+                    except json.JSONDecodeError as e:
+                        logging.warning(f"JSON decode error: {e}")
 
             elif msg["type"] in ("websocket.disconnect", "websocket.close"):
                 break
 
     except WebSocketDisconnect:
-        pass
+        logging.info("WebSocket disconnected.")
+    except Exception as e:
+        logging.error(f"WebSocket error: {e}")
     finally:
         try:
             if output_task:
                 output_task.cancel()
+                try:
+                    await output_task
+                except asyncio.CancelledError:
+                    pass
             if worker_process and worker_process.is_alive():
                 input_q_mp.put(b"__EOS__")
                 worker_process.terminate()
@@ -149,8 +180,8 @@ async def websocket_transcribe(ws: WebSocket):
                 input_q_mp.close()
             if output_q_mp:
                 output_q_mp.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Cleanup error: {e}")
         await ws.close()
 
 if __name__ == "__main__":

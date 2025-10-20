@@ -1,4 +1,6 @@
 fastapi
 uvicorn
+#openai-whisper
 numpy
 faster-whisper
+webrtcvad-wheels

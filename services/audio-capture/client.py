@@ -10,10 +10,11 @@ import numpy as np
 import sounddevice as sd
 import websockets
 
+# Import configuration values
+from shared.config.audio_config import SAMPLE_RATE, CHANNELS, CHUNK_DURATION
+
 # ---------- Settings ----------
-SAMPLE_RATE = 16000
-CHANNELS = 1
-BLOCK_DURATION = 0.1  # Lowered for better real-time
+BLOCK_DURATION = CHUNK_DURATION  # Use config value
 DTYPE = "int16"
 
 CLASSIFIER_WS_URL = "ws://localhost:8001/classify"
@@ -43,6 +44,8 @@ async def reader_task(ws_transcribe):
                 print(f"\r[partial] {data['partial']}", end="", flush=True)
             if "final" in data:
                 print(f"\n[final]   {data['final']}")
+    except asyncio.CancelledError:
+        logging.info("Reader task cancelled.")
     except Exception as e:
         logging.error(f"Reader task error: {e}")
 
@@ -70,15 +73,6 @@ async def main():
         reader = asyncio.create_task(reader_task(ws_transcribe))
 
         blocksize = int(SAMPLE_RATE * BLOCK_DURATION)
-        stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=DTYPE,
-            blocksize=blocksize,
-            callback=audio_callback,
-        )
-        stream.start()
-
         loop = asyncio.get_running_loop()
 
         def handle_sigint(*_):
@@ -90,28 +84,36 @@ async def main():
                 loop.add_signal_handler(sig, handle_sigint)
             except NotImplementedError:
                 pass
-
         try:
-            while not stop_flag:
-                block = await loop.run_in_executor(None, audio_q.get)
-                if block is None:
-                    continue
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                blocksize=blocksize,
+                callback=audio_callback,
+            ):
+                while not stop_flag:
+                    block = await loop.run_in_executor(None, audio_q.get)
+                    if block is None:
+                        continue
 
-                if PRINT_ENERGY:
-                    energy = float(np.mean(block.astype(np.float32) ** 2))
-                    print(f"\n[energy] {energy:.1f}")
+                    if PRINT_ENERGY:
+                        energy = float(np.mean(block.astype(np.float32) ** 2))
+                        print(f"\n[energy] {energy:.1f}")
 
-                asyncio.create_task(process_block(block, ws_classifier, ws_transcribe))
-                await asyncio.sleep(0)
+                    asyncio.create_task(process_block(block, ws_classifier, ws_transcribe))
+                    await asyncio.sleep(0)
 
         finally:
-            stream.stop()
-            stream.close()
             try:
                 await ws_transcribe.send(json.dumps({"event": "eos"}))
             except Exception:
                 pass
             reader.cancel()
+            try:
+                await reader
+            except asyncio.CancelledError:
+                pass
 
 if __name__ == "__main__":
     try:
