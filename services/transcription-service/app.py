@@ -4,6 +4,7 @@ import os
 import multiprocessing as mp
 import logging
 from typing import Optional
+from typing import Any
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +37,7 @@ def is_speech(audio_chunk: bytes) -> bool:
         return False
     return vad.is_speech(audio_chunk[:bytes_per_frame], SAMPLE_RATE)
 
-def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: str, translate_flag: mp.Value):
+def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: str, translate_flag: Any):
     try:
         print(f"[worker] Loading Faster-Whisper model '{model_name}' (PID: {os.getpid()})")
         model = WhisperModel(model_name, device="cpu")
