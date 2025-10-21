@@ -1,0 +1,8 @@
+numpy
+sounddevice
+websockets
+fastapi
+uvicorn[standard]
+#openai-whisper
+faster-whisper
+webrtcvad-wheels

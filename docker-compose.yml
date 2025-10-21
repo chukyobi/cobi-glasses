@@ -1,25 +1,29 @@
-
 version: '3.8'
 
 services:
-  audio-capture:
-    build: ./services/audio-capture
-    container_name: audio_capture
-    volumes:
-      - ./shared:/app/shared
-    env_file:
-      - .env
-    restart: always
-
+  # --------------------------------------------------------------------------
+  # SOUND CLASSIFIER SERVICE (Server on port 8001)
+  # --------------------------------------------------------------------------
   sound-classifier:
     build: ./services/sound-classifier
     container_name: sound_classifier
     volumes:
       - ./shared:/app/shared
+    ports:
+      - "8001:8001" # Exposing the port for the client connection
     env_file:
       - .env
     restart: always
+    # Optional: Add a simple health check if the service provides a health endpoint
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
 
+  # --------------------------------------------------------------------------
+  # TRANSCRIPTION SERVICE (Server on port 8002)
+  # --------------------------------------------------------------------------
   transcription-service:
     build: ./services/transcription-service
     container_name: transcription_service
@@ -29,11 +33,29 @@ services:
       - "8002:8002"
     env_file:
       - .env
-    depends_on:
-      - audio-capture
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+    # Note: Removed dependency on audio-capture as it's a server, not a client
+
+  # --------------------------------------------------------------------------
+  # AUDIO CAPTURE CLIENT (Client connects to 8001 and 8002)
+  # --------------------------------------------------------------------------
+  audio-capture:
+    build: ./services/audio-capture
+    container_name: audio_capture
+    volumes:
+      - ./shared:/app/shared
+    env_file:
+      - .env
+    restart: always
+    # FIX: Map host audio device to the container to resolve PortAudioError (Linux Host)
+    #devices:
+      #- /dev/snd:/dev/snd
+    # FIX: Ensure servers are up before the client tries to connect
+    depends_on:
+      - sound-classifier
+      - transcription-service
