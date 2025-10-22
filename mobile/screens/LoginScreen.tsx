@@ -1,5 +1,3 @@
-"use client"
-
 import { useState } from "react"
 import {
   View,
@@ -12,23 +10,43 @@ import {
   Platform,
 } from "react-native"
 import { LinearGradient } from "expo-linear-gradient"
+import { User } from "@/interfaces/User"
+
+// Update the props interface to match what LoginRoute is passing
+interface LoginScreenProps {
+  onNavigateToSignUp: () => void
+  // Changed from onLogin/onSkip to the unified success handler
+  onLoginSuccess: (user: User, token: string) => Promise<void>
+}
 
 export default function LoginScreen({
   onNavigateToSignUp,
-  onSkip,
-  onLogin,
-}: {
-  onNavigateToSignUp: () => void
-  onSkip: () => void
-  onLogin: () => void
-}) {
+  onLoginSuccess, 
+}: LoginScreenProps) {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
 
   const handleLogin = () => {
-    console.log("[v0] Login attempt:", { email, password })
-    onLogin()
+    console.log("Login attempt:", { email, password })
+
+    // --- MOCK API CALL SUCCESS ---
+    // In a real app, this is where you'd call your API.
+    // The response would give you the token and the user object, including isOnboarded status.
+    
+    // MOCK DATA: Simulating server response. If email contains 'new', we treat them as a new user (isOnboarded=false).
+    // Use an email like "old@user.com" to go straight to tabs.
+    // Use an email like "new@user.com" to go to onboarding.
+    const mockUser: User = {
+        id: 'user-id-' + Math.random().toString(36).substring(7),
+        name: 'Mock User',
+        email: email, 
+        isOnboarded: !email.toLowerCase().includes("new"), // If email contains 'new', isOnboarded=false
+    };
+    const mockToken = 'mock-jwt-token-for-' + mockUser.id;
+
+    // Call the success handler in the router component to handle saving and navigation
+    onLoginSuccess(mockUser, mockToken);
   }
 
   return (
@@ -42,9 +60,9 @@ export default function LoginScreen({
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {/* Header */}
           <View style={styles.header}>
-            <TouchableOpacity style={styles.skipButtonTop} onPress={onSkip}>
-              <Text style={styles.skipButtonTopText}>Skip</Text>
-            </TouchableOpacity>
+            {/* The "Skip" button has been visually removed as onboarding is mandatory */}
+            {/* We keep the style container just in case it affects layout, but empty */}
+            <View style={styles.skipButtonTop} />
             <Text style={styles.logo}>Cobi</Text>
             <Text style={styles.subtitle}>Welcome Back</Text>
           </View>
@@ -56,7 +74,7 @@ export default function LoginScreen({
               <Text style={styles.label}>Email</Text>
               <TextInput
                 style={styles.input}
-                placeholder="you@example.com"
+                placeholder="you@example.com (try 'new@user.com' or 'old@user.com')"
                 placeholderTextColor="#64748b"
                 value={email}
                 onChangeText={setEmail}
@@ -142,15 +160,12 @@ const styles = StyleSheet.create({
     marginBottom: 40,
     position: "relative",
   },
-  skipButtonTop: {
+  skipButtonTop: { // Now just a placeholder to maintain alignment
     position: "absolute",
     top: 0,
     right: 0,
-  },
-  skipButtonTopText: {
-    fontSize: 16,
-    color: "#3b82f6",
-    fontWeight: "600",
+    width: 60, // Give it a fixed size for alignment
+    height: 24, // Matches font size
   },
   logo: {
     fontSize: 48,
