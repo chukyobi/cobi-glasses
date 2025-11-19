@@ -63,6 +63,8 @@ def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: st
                         task_type = "translate" if translate_flag.value else "transcribe"
                         segments, info = model.transcribe(audio, task=task_type)
                         text = " ".join([seg.text for seg in segments])
+                        print(f"[worker] FINAL transcription: {text}")
+                        logging.info(f"Final transcription: {text}")
                         output_q.put(json.dumps({"final": text, "language": info.language}))
                     except Exception as e:
                         output_q.put(json.dumps({"error": f"final transcription error: {str(e)}"}))
@@ -79,6 +81,8 @@ def offline_worker_process(input_q: mp.Queue, output_q: mp.Queue, model_name: st
                     task_type = "translate" if translate_flag.value else "transcribe"
                     segments, info = model.transcribe(audio, task=task_type)
                     text = " ".join([seg.text for seg in segments])
+                    print(f"[worker] PARTIAL transcription: {text}")
+                    logging.info(f"Partial transcription: {text}")
                     output_q.put(json.dumps({"partial": text, "language": info.language}))
                 except Exception as e:
                     output_q.put(json.dumps({"error": f"partial transcription error: {str(e)}"}))
@@ -167,23 +171,33 @@ async def websocket_transcribe(ws: WebSocket):
         logging.error(f"WebSocket error: {e}")
     finally:
         try:
+            # Cancel output polling
             if output_task:
                 output_task.cancel()
                 try:
                     await output_task
                 except asyncio.CancelledError:
                     pass
+            
+            # Terminate worker
             if worker_process and worker_process.is_alive():
                 input_q_mp.put(b"__EOS__")
                 worker_process.terminate()
                 worker_process.join(timeout=1.0)
+            
+            # Close queues
             if input_q_mp:
                 input_q_mp.close()
             if output_q_mp:
                 output_q_mp.close()
+
+            # FIX: Prevent "RuntimeError: Cannot call send once a close message has been sent"
+            # We check the internal state before trying to close.
+            if ws.client_state.name != "DISCONNECTED":
+                await ws.close()
+
         except Exception as e:
             logging.error(f"Cleanup error: {e}")
-        await ws.close()
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8002, log_level="info", reload=False)

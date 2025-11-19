@@ -84,4 +84,44 @@ public class UserController {
         user.setPassword(null); // remove password from response
         return ResponseEntity.ok(user);
     }
+
+    @PostMapping("/verify-otp")
+    public ResponseEntity<?> verifyOtp(@RequestBody Map<String, String> request) {
+        String email = request.get("email");
+        String code = request.get("code");
+
+        if (email == null || code == null) {
+            return ResponseEntity.badRequest().body("Email and code are required");
+        }
+
+        String result = userService.verifyOtp(email, code);
+        
+        if (result.equals("User verified successfully")) {
+            return ResponseEntity.ok(Map.of("message", result, "success", true));
+        } else {
+            return ResponseEntity.badRequest().body(Map.of("message", result, "success", false));
+        }
+    }
+
+    @PostMapping("/resend-otp")
+    public ResponseEntity<?> resendOtp(@RequestBody Map<String, String> request) {
+        String email = request.get("email");
+
+        if (email == null) {
+            return ResponseEntity.badRequest().body("Email is required");
+        }
+
+        Optional<User> userOpt = userService.findByEmail(email);
+        if (userOpt.isEmpty()) {
+            return ResponseEntity.status(404).body("User not found");
+        }
+
+        User user = userOpt.get();
+        if (user.isVerified()) {
+            return ResponseEntity.badRequest().body("User is already verified");
+        }
+
+        String result = userService.generateOtp(user);
+        return ResponseEntity.ok(Map.of("message", result, "success", true));
+    }
 }

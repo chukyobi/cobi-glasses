@@ -7,8 +7,7 @@ import sys
 from typing import Optional
 
 import os
-# Add the project root to the Python path
-# Assuming client.py is in project_root/services/audio-capture/
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, "../../"))
 sys.path.insert(0, project_root)
@@ -24,7 +23,6 @@ from shared.config.audio_config import SAMPLE_RATE, CHANNELS, CHUNK_DURATION
 BLOCK_DURATION = CHUNK_DURATION  # Use config value
 DTYPE = "int16"
 
-# Updated lines in services/audio-capture/client.py
 CLASSIFIER_WS_URL = "ws://localhost:8001/classify"
 TRANSCRIBE_WS_URL = "ws://localhost:8002/transcribe"
 

@@ -1,103 +1,195 @@
-import Image from "next/image";
+"use client"
+
+import { useState, useRef, useCallback } from "react"
+import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Mic, Square, Brain, Radio, Zap, Volume2 } from "lucide-react"
+import GlassesScene from "@/components/glasses-scene"
+import TranscriptionDisplay from "@/components/transcription-display"
+import ControlPanel from "@/components/control-panel"
+
+// Configuration points to the new Python Bridge Server
+const CONTROL_WEBSOCKET_URL = "ws://localhost:8000/control"
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [isRecording, setIsRecording] = useState(false)
+  const [transcript, setTranscript] = useState("")
+  const [transcripts, setTranscripts] = useState<string[]>([])
+  const [translateEnabled, setTranslateEnabled] = useState(false)
+  const [mode, setMode] = useState("local")
+  const [isConnected, setIsConnected] = useState(false) // Reflects connection to the Bridge
+  
+  // State for Environmental Sound (NOTE: This requires updating the Python Bridge to forward classifier events)
+  const [envSound, setEnvSound] = useState<{label: string, confidence: number} | null>(null)
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  // Ref for the single WebSocket connection to the Python Bridge
+  const controlSocketRef = useRef<WebSocket | null>(null)
+
+  const stopControlConnection = useCallback(() => {
+    if (controlSocketRef.current) {
+        // Send stop command before closing
+        if (controlSocketRef.current.readyState === WebSocket.OPEN) {
+            controlSocketRef.current.send(JSON.stringify({ action: "stop" }))
+        }
+        controlSocketRef.current.close()
+        controlSocketRef.current = null
+    }
+    setIsConnected(false)
+    setIsRecording(false)
+  }, [])
+
+  const startRecording = async () => {
+    setTranscripts([])
+    setTranscript("")
+    
+    try {
+      controlSocketRef.current = new WebSocket(CONTROL_WEBSOCKET_URL)
+      
+      controlSocketRef.current.onopen = () => {
+        setIsConnected(true)
+        console.log("Connected to Python Audio Bridge (Port 8000). Sending START command.")
+        
+        // 1. Send the START command to the Python Bridge
+        controlSocketRef.current?.send(JSON.stringify({ action: "start" }))
+        setIsRecording(true)
+      }
+
+      controlSocketRef.current.onmessage = (event) => {
+        try {
+          // 2. Python Bridge forwards transcription results (text)
+          const data = JSON.parse(event.data)
+          
+          if (data.partial) setTranscript(data.partial)
+          if (data.final) {
+            setTranscripts((prev) => [...prev, data.final])
+            setTranscript("")
+          }
+          
+          // NOTE: If Python Bridge is updated to forward classifier events, they appear here too
+          if (data.type === "environment") {
+             setEnvSound({ label: data.label, confidence: data.confidence })
+             setTimeout(() => setEnvSound(null), 3000)
+          }
+
+        } catch (e) { console.error("Error processing message from bridge:", e) }
+      }
+
+      controlSocketRef.current.onclose = () => {
+        setIsConnected(false)
+        setIsRecording(false)
+        console.log("Python Audio Bridge connection closed.")
+      }
+
+    } catch (error) {
+      console.error("CRITICAL: Error connecting to Python Bridge:", error)
+      alert("Error: Python Audio Bridge (Port 8000) is not running. Please start the Python bridge script first.")
+      stopControlConnection()
+    }
+  }
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      // Send STOP command before cleaning up the WebSocket
+      controlSocketRef.current?.send(JSON.stringify({ action: "stop" }))
+      stopControlConnection()
+    } else {
+      startRecording()
+    }
+  }
+  
+  const handleTranslateToggle = (enabled: boolean) => {
+    setTranslateEnabled(enabled)
+    // NOTE: In this new architecture, the translate command would need to be routed 
+    // through the Python Bridge to the Transcriber (8002). This logic is omitted for brevity.
+  }
+
+
+  return (
+    <main className="min-h-screen bg-linear-to-b from-slate-950 via-slate-900 to-black flex flex-col">
+      {/* Environmental Sound Toast Notification */}
+      {envSound && (
+         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 fade-in duration-300">
+            <div className="flex items-center gap-3 px-6 py-3 bg-orange-500/10 border border-orange-500/40 backdrop-blur-xl rounded-full shadow-[0_0_30px_rgba(249,115,22,0.3)]">
+               <Volume2 className="w-5 h-5 text-orange-400 animate-pulse" />
+               <span className="text-orange-100 font-bold tracking-wide uppercase text-sm">
+                  {envSound.label}
+               </span>
+               <span className="text-xs text-orange-500 font-mono">
+                 {Math.round(envSound.confidence * 100)}%
+               </span>
+            </div>
+         </div>
+      )}
+
+      <header className="border-b border-slate-800/50 bg-linear-to-r from-slate-950/80 to-slate-900/80 backdrop-blur-sm sticky top-0 z-50 py-4 lg:py-5">
+        <div className="max-w-7xl mx-auto px-4 lg:px-6">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 lg:gap-3">
+              <div className="w-9 lg:w-10 h-9 lg:h-10 rounded-lg bg-linear-to-br from-cyan-400 to-blue-400 flex items-center justify-center shrink-0">
+                <Brain className="w-5 lg:w-6 h-5 lg:h-6 text-black" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-2xl lg:text-3xl font-display font-bold bg-linear-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent truncate">COBI</h1>
+                <p className="text-xs text-slate-400 tracking-widest font-medium hidden sm:block">PERSONAL INTELLIGENCE</p>
+              </div>
+            </div>
+            <Badge className={`flex items-center gap-2 px-2 lg:px-3 py-1 lg:py-2 text-xs font-semibold shrink-0 ${isConnected ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-red-500/20 text-red-400 border-red-500/30"}`} variant="outline">
+              <span className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-400" : "bg-red-400"} animate-pulse`}></span>
+              <span className="hidden sm:inline">{isConnected ? "Connected" : "Offline"}</span>
+              <span className="sm:hidden">{isConnected ? "On" : "Off"}</span>
+            </Badge>
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
-  );
+      </header>
+
+      <div className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 lg:gap-8 w-full max-w-7xl">
+          <div className="hidden lg:flex lg:col-span-2 items-center justify-center">
+            <div className="relative group w-full h-full min-h-[500px]">
+              <div className="absolute inset-0 bg-linear-to-r from-cyan-500/20 to-blue-500/20 rounded-3xl blur-2xl group-hover:blur-3xl transition-all duration-500"></div>
+              <GlassesScene isRecording={isRecording} />
+            </div>
+          </div>
+
+          <div className="lg:col-span-3 flex items-center justify-center w-full">
+            <Card className="w-full border-slate-700/50 bg-slate-900/40 backdrop-blur-2xl shadow-2xl rounded-2xl overflow-hidden">
+              <div className="border-b border-slate-700/30 p-4 sm:p-6 lg:p-8 bg-linear-to-b from-slate-800/30 to-transparent">
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Radio className="w-4 sm:w-5 h-4 sm:h-5 text-cyan-400 shrink-0" />
+                    <h2 className="text-xl sm:text-2xl font-display font-bold text-white truncate">Understand Intent</h2>
+                  </div>
+                  <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">Transform speech into human-aligned understanding</p>
+                </div>
+              </div>
+
+              <CardContent className="space-y-6 sm:space-y-8 py-6 sm:py-10 px-4 sm:px-8">
+                <div className="flex flex-col items-center gap-4 sm:gap-6">
+                  <div className="relative">
+                    {isRecording && (
+                      <>
+                        <div className="absolute inset-0 rounded-full bg-linear-to-r from-cyan-500 to-blue-500 animate-pulse" style={{ boxShadow: "0 0 80px rgba(34, 211, 238, 0.6)" }}></div>
+                        <div className="absolute inset-4 rounded-full border border-cyan-400/50" style={{ animation: "pulse-ring 2s infinite" }}></div>
+                      </>
+                    )}
+                    <Button onClick={toggleRecording} size="lg" className={`relative z-10 w-24 h-24 sm:w-28 sm:h-28 rounded-full flex items-center justify-center transition-all duration-300 font-bold text-lg ${isRecording ? "bg-linear-to-br from-cyan-500 to-blue-500 text-white" : "bg-linear-to-br from-slate-700 to-slate-800 text-slate-100"}`}>
+                      {isRecording ? <Square className="w-8 h-8 sm:w-10 sm:h-10 fill-white" /> : <Mic className="w-8 h-8 sm:w-10 sm:h-10" />}
+                    </Button>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs sm:text-sm font-semibold text-slate-300 tracking-wide">{isRecording ? "LISTENING..." : "TAP TO ACTIVATE"}</p>
+                  </div>
+                </div>
+                <TranscriptionDisplay finalTranscripts={transcripts} interimTranscript={transcript} />
+              </CardContent>
+              <div className="border-t border-slate-700/30 p-4 sm:p-6 lg:p-8 bg-linear-to-t from-slate-800/20 to-transparent">
+                <ControlPanel translateEnabled={translateEnabled} setTranslateEnabled={handleTranslateToggle} mode={mode} setMode={setMode} />
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </main>
+  )
 }

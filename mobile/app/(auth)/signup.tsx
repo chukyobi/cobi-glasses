@@ -1,3 +1,4 @@
+//app/(auth)/signup.tsx
 "use client"
 
 import { useRouter } from "expo-router"

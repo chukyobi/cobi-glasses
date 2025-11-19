@@ -1,33 +1,42 @@
-import { useRouter } from "expo-router"
-import LoginScreen from "@/screens/LoginScreen"
-import { useAuthStore } from "@/stores/useAuthStore" 
-import {User} from "@/interfaces/User"
-
-
+import { useRouter } from "expo-router";
+import LoginScreen from "@/screens/LoginScreen"; 
+import { useAuthStore } from "@/stores/useAuthStore";
 
 export default function LoginRoute() {
-  const router = useRouter()
+  const router = useRouter();
   // Import signIn function
-  const { signIn } = useAuthStore() 
+  const { signIn } = useAuthStore();
 
   const handleNavigateToSignUp = () => {
-    router.push("./signup")
-  }
+    // Navigate to the signup screen in the same (auth) stack
+    router.push("./signup");
+  };
 
-  // 2. Type the parameters to remove implicit 'any' errors
-  const handleLoginSuccess = async (user: User, token: string) => {
-    // 1. Save session data
-    await signIn(user, token) 
+  // 2. CORRECTED: The handler accepts credentials from the screen.
+  const handleLoginAttempt = async (email: string, password: string) => {
+    try {
+      // 1. Call the store's signIn function, which handles API call, token saving, 
+      //    and updating the global state (token, user).
+      await signIn(email, password);
 
-    // 2. Check the user's onboarding status (based on server data)
-    if (user.isOnboarded) {
-        router.replace("/(tabs)")
-    } 
-  }
+      // 2. If signIn is successful (no error thrown), the user is logged in.
+      //    The RootLayout will handle the replacement to /(tabs) via useEffect, 
+      //    but we perform an immediate replacement here for snappier navigation.
+      router.replace("/(tabs)");
 
-  // 3. Pass the correctly typed prop to the updated LoginScreen
-  return <LoginScreen 
-    onNavigateToSignUp={handleNavigateToSignUp} 
-    onLoginSuccess={handleLoginSuccess} 
-  />
+    } catch (error) {
+      // Log the error and re-throw it so the UI (LoginScreen) can catch 
+      // it and display an appropriate message to the user.
+      console.error("Login attempt failed:", error);
+      throw error;
+    }
+  };
+
+  // 3. Pass the correct prop (`onLoginAttempt`) to the LoginScreen
+  return (
+    <LoginScreen
+      onNavigateToSignUp={handleNavigateToSignUp}
+      onLoginAttempt={handleLoginAttempt}
+    />
+  );
 }
