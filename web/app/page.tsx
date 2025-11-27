@@ -39,54 +39,50 @@ export default function Home() {
     setIsRecording(false)
   }, [])
 
-  const startRecording = async () => {
-    setTranscripts([])
-    setTranscript("")
-    
+
+const startRecording = async () => {
+  setTranscripts([]);
+  setTranscript("");
+
+  const ws = new WebSocket(CONTROL_WEBSOCKET_URL);
+  controlSocketRef.current = ws;
+
+  ws.onmessage = (event) => {
     try {
-      controlSocketRef.current = new WebSocket(CONTROL_WEBSOCKET_URL)
-      
-      controlSocketRef.current.onopen = () => {
-        setIsConnected(true)
-        console.log("Connected to Python Audio Bridge (Port 8000). Sending START command.")
-        
-        // 1. Send the START command to the Python Bridge
-        controlSocketRef.current?.send(JSON.stringify({ action: "start" }))
-        setIsRecording(true)
+      const data = JSON.parse(event.data);
+      if (data.partial) setTranscript(data.partial);
+      if (data.final) {
+        setTranscripts(prev => [...prev, data.final]);
+        setTranscript("");
       }
-
-      controlSocketRef.current.onmessage = (event) => {
-        try {
-          // 2. Python Bridge forwards transcription results (text)
-          const data = JSON.parse(event.data)
-          
-          if (data.partial) setTranscript(data.partial)
-          if (data.final) {
-            setTranscripts((prev) => [...prev, data.final])
-            setTranscript("")
-          }
-          
-          // NOTE: If Python Bridge is updated to forward classifier events, they appear here too
-          if (data.type === "environment") {
-             setEnvSound({ label: data.label, confidence: data.confidence })
-             setTimeout(() => setEnvSound(null), 3000)
-          }
-
-        } catch (e) { console.error("Error processing message from bridge:", e) }
+      if (data.type === "environment") {
+        setEnvSound({ label: data.label, confidence: data.confidence });
+        setTimeout(() => setEnvSound(null), 3000);
       }
-
-      controlSocketRef.current.onclose = () => {
-        setIsConnected(false)
-        setIsRecording(false)
-        console.log("Python Audio Bridge connection closed.")
-      }
-
-    } catch (error) {
-      console.error("CRITICAL: Error connecting to Python Bridge:", error)
-      alert("Error: Python Audio Bridge (Port 8000) is not running. Please start the Python bridge script first.")
-      stopControlConnection()
+    } catch (e) {
+      console.error("Error processing message from bridge:", e);
     }
-  }
+  };
+
+  ws.addEventListener("open", () => {
+    setIsConnected(true);
+    console.log("Connected to Python Audio Bridge. Sending START command.");
+    ws.send(JSON.stringify({ action: "start" }));  // <-- only now
+    setIsRecording(true);
+  });
+
+  ws.onclose = () => {
+    setIsConnected(false);
+    setIsRecording(false);
+    console.log("Python Audio Bridge connection closed.");
+  };
+
+  ws.onerror = (err) => {
+    console.error("WebSocket error", err);
+    alert("Error: Python Audio Bridge (Port 8000) may not be running or reachable.");
+    stopControlConnection();
+  };
+};
 
   const toggleRecording = () => {
     if (isRecording) {
