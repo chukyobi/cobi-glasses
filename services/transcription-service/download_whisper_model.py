@@ -6,8 +6,8 @@ import os
 model_name = "base"
 
 # Directory to store the model
-download_dir = os.path.abspath("C:/Users/bvnx/Documents/school/cobi-glasses/models/faster-whisper-base")
-
+#download_dir = os.path.abspath("C:/Users/bvnx/Documents/school/cobi-glasses/models/faster-whisper-base")
+download_dir = os.path.abspath("/Users/mac/documents/devwork/school/cobi-glasses/models/faster-whisper-base")
 os.makedirs(download_dir, exist_ok=True)
 
 print(f"Downloading Faster-Whisper model '{model_name}' to {download_dir}...")
