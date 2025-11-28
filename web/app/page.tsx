@@ -1,121 +1,124 @@
-"use client"
 
-import { useState, useRef, useCallback } from "react"
-import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Mic, Square, Brain, Radio, Zap, Volume2 } from "lucide-react"
-import GlassesScene from "@/components/glasses-scene"
-import TranscriptionDisplay from "@/components/transcription-display"
-import ControlPanel from "@/components/control-panel"
+"use client";
 
-// Configuration points to the new Python Bridge Server
-const CONTROL_WEBSOCKET_URL = "ws://localhost:8000/control"
+import { useState, useRef, useCallback } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Mic, Square, Brain, Radio, Volume2 } from "lucide-react";
+import GlassesScene from "@/components/glasses-scene";
+import TranscriptionDisplay from "@/components/transcription-display";
+import ControlPanel from "@/components/control-panel";
+
+const CONTROL_WEBSOCKET_URL = "ws://localhost:8000/control";
 
 export default function Home() {
-  const [isRecording, setIsRecording] = useState(false)
-  const [transcript, setTranscript] = useState("")
-  const [transcripts, setTranscripts] = useState<string[]>([])
-  const [translateEnabled, setTranslateEnabled] = useState(false)
-  const [mode, setMode] = useState("local")
-  const [isConnected, setIsConnected] = useState(false) // Reflects connection to the Bridge
-  
-  // State for Environmental Sound (NOTE: This requires updating the Python Bridge to forward classifier events)
-  const [envSound, setEnvSound] = useState<{label: string, confidence: number} | null>(null)
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [transcripts, setTranscripts] = useState<string[]>([]);
+  const [translateEnabled, setTranslateEnabled] = useState(false);
+  const [mode, setMode] = useState("local");
+  const [isConnected, setIsConnected] = useState(false);
 
-  // Ref for the single WebSocket connection to the Python Bridge
-  const controlSocketRef = useRef<WebSocket | null>(null)
+  // (Optional) keep env sound toast placeholder for future
+  const [envSound, setEnvSound] = useState<{ label: string; confidence: number } | null>(null);
+
+  const controlSocketRef = useRef<WebSocket | null>(null);
 
   const stopControlConnection = useCallback(() => {
     if (controlSocketRef.current) {
-        // Send stop command before closing
-        if (controlSocketRef.current.readyState === WebSocket.OPEN) {
-            controlSocketRef.current.send(JSON.stringify({ action: "stop" }))
-        }
-        controlSocketRef.current.close()
-        controlSocketRef.current = null
-    }
-    setIsConnected(false)
-    setIsRecording(false)
-  }, [])
-
-
-const startRecording = async () => {
-  setTranscripts([]);
-  setTranscript("");
-
-  const ws = new WebSocket(CONTROL_WEBSOCKET_URL);
-  controlSocketRef.current = ws;
-
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.partial) setTranscript(data.partial);
-      if (data.final) {
-        setTranscripts(prev => [...prev, data.final]);
-        setTranscript("");
+      if (controlSocketRef.current.readyState === WebSocket.OPEN) {
+        controlSocketRef.current.send(JSON.stringify({ action: "stop" }));
       }
-      if (data.type === "environment") {
-        setEnvSound({ label: data.label, confidence: data.confidence });
-        setTimeout(() => setEnvSound(null), 3000);
-      }
-    } catch (e) {
-      console.error("Error processing message from bridge:", e);
+      controlSocketRef.current.close();
+      controlSocketRef.current = null;
     }
-  };
-
-  ws.addEventListener("open", () => {
-    setIsConnected(true);
-    console.log("Connected to Python Audio Bridge. Sending START command.");
-    ws.send(JSON.stringify({ action: "start" }));  // <-- only now
-    setIsRecording(true);
-  });
-
-  ws.onclose = () => {
     setIsConnected(false);
     setIsRecording(false);
-    console.log("Python Audio Bridge connection closed.");
-  };
+  }, []);
 
-  ws.onerror = (err) => {
-    console.error("WebSocket error", err);
-    alert("Error: Python Audio Bridge (Port 8000) may not be running or reachable.");
-    stopControlConnection();
+  const startRecording = async () => {
+    setTranscripts([]);
+    setTranscript("");
+
+    const ws = new WebSocket(CONTROL_WEBSOCKET_URL);
+    controlSocketRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.partial) setTranscript(data.partial);
+        if (data.final) {
+          setTranscripts((prev) => [...prev, data.final]);
+          setTranscript("");
+        }
+        // Optional: pass through environment events in the future
+        if (data.type === "environment") {
+          setEnvSound({ label: data.label, confidence: data.confidence });
+          setTimeout(() => setEnvSound(null), 3000);
+        }
+      } catch (e) {
+        console.error("Error processing message from bridge:", e);
+      }
+    };
+
+    ws.addEventListener("open", () => {
+      setIsConnected(true);
+      console.log("Connected to Python Audio Bridge. Sending START command.");
+      ws.send(JSON.stringify({ action: "start" })); // start mic capture in bridge
+      setIsRecording(true);
+    });
+
+    ws.onclose = () => {
+      setIsConnected(false);
+      setIsRecording(false);
+      console.log("Python Audio Bridge connection closed.");
+    };
+
+    ws.onerror = (err) => {
+      console.error("WebSocket error", err);
+      alert("Error: Python Audio Bridge (Port 8000) may not be running or reachable.");
+      stopControlConnection();
+    };
   };
-};
 
   const toggleRecording = () => {
     if (isRecording) {
-      // Send STOP command before cleaning up the WebSocket
-      controlSocketRef.current?.send(JSON.stringify({ action: "stop" }))
-      stopControlConnection()
+      controlSocketRef.current?.send(JSON.stringify({ action: "stop" }));
+      stopControlConnection();
     } else {
-      startRecording()
+      startRecording();
     }
-  }
-  
-  const handleTranslateToggle = (enabled: boolean) => {
-    setTranslateEnabled(enabled)
-    // NOTE: In this new architecture, the translate command would need to be routed 
-    // through the Python Bridge to the Transcriber (8002). This logic is omitted for brevity.
-  }
+  };
 
+  const handleTranslateToggle = (enabled: boolean) => {
+    setTranslateEnabled(enabled);
+    // Route the translate toggle through the Bridge to Transcriber
+    try {
+      controlSocketRef.current?.send(JSON.stringify({
+        action: "toggle_translate",
+        enabled
+      }));
+    } catch (e) {
+      console.warn("Translate toggle failed to send:", e);
+    }
+  };
 
   return (
     <main className="min-h-screen bg-linear-to-b from-slate-950 via-slate-900 to-black flex flex-col">
-      {/* Environmental Sound Toast Notification */}
+      {/* Optional: Environmental Sound Toast (hidden until classifier comes back) */}
       {envSound && (
-         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 fade-in duration-300">
-            <div className="flex items-center gap-3 px-6 py-3 bg-orange-500/10 border border-orange-500/40 backdrop-blur-xl rounded-full shadow-[0_0_30px_rgba(249,115,22,0.3)]">
-               <Volume2 className="w-5 h-5 text-orange-400 animate-pulse" />
-               <span className="text-orange-100 font-bold tracking-wide uppercase text-sm">
-                  {envSound.label}
-               </span>
-               <span className="text-xs text-orange-500 font-mono">
-                 {Math.round(envSound.confidence * 100)}%
-               </span>
-            </div>
-         </div>
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 fade-in duration-300">
+          <div className="flex items-center gap-3 px-6 py-3 bg-orange-500/10 border border-orange-500/40 backdrop-blur-xl rounded-full shadow-[0_0_30px_rgba(249,115,22,0.3)]">
+            <Volume2 className="w-5 h-5 text-orange-400 animate-pulse" />
+            <span className="text-orange-100 font-bold tracking-wide uppercase text-sm">
+              {envSound.label}
+            </span>
+            <span className="text-xs text-orange-500 font-mono">
+              {Math.round(envSound.confidence * 100)}%
+            </span>
+          </div>
+        </div>
       )}
 
       <header className="border-b border-slate-800/50 bg-linear-to-r from-slate-950/80 to-slate-900/80 backdrop-blur-sm sticky top-0 z-50 py-4 lg:py-5">
@@ -126,12 +129,27 @@ const startRecording = async () => {
                 <Brain className="w-5 lg:w-6 h-5 lg:h-6 text-black" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-2xl lg:text-3xl font-display font-bold bg-linear-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent truncate">COBI</h1>
-                <p className="text-xs text-slate-400 tracking-widest font-medium hidden sm:block">PERSONAL INTELLIGENCE</p>
+                <h1 className="text-2xl lg:text-3xl font-display font-bold bg-linear-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent truncate">
+                  COBI
+                </h1>
+                <p className="text-xs text-slate-400 tracking-widest font-medium hidden sm:block">
+                  PERSONAL INTELLIGENCE
+                </p>
               </div>
             </div>
-            <Badge className={`flex items-center gap-2 px-2 lg:px-3 py-1 lg:py-2 text-xs font-semibold shrink-0 ${isConnected ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-red-500/20 text-red-400 border-red-500/30"}`} variant="outline">
-              <span className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-400" : "bg-red-400"} animate-pulse`}></span>
+            <Badge
+              className={`flex items-center gap-2 px-2 lg:px-3 py-1 lg:py-2 text-xs font-semibold shrink-0 ${
+                isConnected
+                  ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                  : "bg-red-500/20 text-red-400 border-red-500/30"
+              }`}
+              variant="outline"
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isConnected ? "bg-emerald-400" : "bg-red-400"
+                } animate-pulse`}
+              />
               <span className="hidden sm:inline">{isConnected ? "Connected" : "Offline"}</span>
               <span className="sm:hidden">{isConnected ? "On" : "Off"}</span>
             </Badge>
@@ -143,7 +161,7 @@ const startRecording = async () => {
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 lg:gap-8 w-full max-w-7xl">
           <div className="hidden lg:flex lg:col-span-2 items-center justify-center">
             <div className="relative group w-full h-full min-h-[500px]">
-              <div className="absolute inset-0 bg-linear-to-r from-cyan-500/20 to-blue-500/20 rounded-3xl blur-2xl group-hover:blur-3xl transition-all duration-500"></div>
+              <div className="absolute inset-0 bg-linear-to-r from-cyan-500/20 to-blue-500/20 rounded-3xl blur-2xl group-hover:blur-3xl transition-all duration-500" />
               <GlassesScene isRecording={isRecording} />
             </div>
           </div>
@@ -154,9 +172,13 @@ const startRecording = async () => {
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
                     <Radio className="w-4 sm:w-5 h-4 sm:h-5 text-cyan-400 shrink-0" />
-                    <h2 className="text-xl sm:text-2xl font-display font-bold text-white truncate">Understand Intent</h2>
+                    <h2 className="text-xl sm:text-2xl font-display font-bold text-white truncate">
+                      Understand Intent
+                    </h2>
                   </div>
-                  <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">Transform speech into human-aligned understanding</p>
+                  <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+                    Transform speech into human-aligned understanding
+                  </p>
                 </div>
               </div>
 
@@ -165,27 +187,54 @@ const startRecording = async () => {
                   <div className="relative">
                     {isRecording && (
                       <>
-                        <div className="absolute inset-0 rounded-full bg-linear-to-r from-cyan-500 to-blue-500 animate-pulse" style={{ boxShadow: "0 0 80px rgba(34, 211, 238, 0.6)" }}></div>
-                        <div className="absolute inset-4 rounded-full border border-cyan-400/50" style={{ animation: "pulse-ring 2s infinite" }}></div>
+                        <div
+                          className="absolute inset-0 rounded-full bg-linear-to-r from-cyan-500 to-blue-500 animate-pulse"
+                          style={{ boxShadow: "0 0 80px rgba(34, 211, 238, 0.6)" }}
+                        />
+                        <div
+                          className="absolute inset-4 rounded-full border border-cyan-400/50"
+                          style={{ animation: "pulse-ring 2s infinite" }}
+                        />
                       </>
                     )}
-                    <Button onClick={toggleRecording} size="lg" className={`relative z-10 w-24 h-24 sm:w-28 sm:h-28 rounded-full flex items-center justify-center transition-all duration-300 font-bold text-lg ${isRecording ? "bg-linear-to-br from-cyan-500 to-blue-500 text-white" : "bg-linear-to-br from-slate-700 to-slate-800 text-slate-100"}`}>
-                      {isRecording ? <Square className="w-8 h-8 sm:w-10 sm:h-10 fill-white" /> : <Mic className="w-8 h-8 sm:w-10 sm:h-10" />}
+                    <Button
+                      onClick={toggleRecording}
+                      size="lg"
+                      className={`relative z-10 w-24 h-24 sm:w-28 sm:h-28 rounded-full flex items-center justify-center transition-all duration-300 font-bold text-lg ${
+                        isRecording
+                          ? "bg-linear-to-br from-cyan-500 to-blue-500 text-white"
+                          : "bg-linear-to-br from-slate-700 to-slate-800 text-slate-100"
+                      }`}
+                    >
+                      {isRecording ? (
+                        <Square className="w-8 h-8 sm:w-10 sm:h-10 fill-white" />
+                      ) : (
+                        <Mic className="w-8 h-8 sm:w-10 sm:h-10" />
+                      )}
                     </Button>
                   </div>
                   <div className="text-center">
-                    <p className="text-xs sm:text-sm font-semibold text-slate-300 tracking-wide">{isRecording ? "LISTENING..." : "TAP TO ACTIVATE"}</p>
+                    <p className="text-xs sm:text-sm font-semibold text-slate-300 tracking-wide">
+                      {isRecording ? "LISTENING..." : "TAP TO ACTIVATE"}
+                    </p>
                   </div>
                 </div>
+
                 <TranscriptionDisplay finalTranscripts={transcripts} interimTranscript={transcript} />
               </CardContent>
+
               <div className="border-t border-slate-700/30 p-4 sm:p-6 lg:p-8 bg-linear-to-t from-slate-800/20 to-transparent">
-                <ControlPanel translateEnabled={translateEnabled} setTranslateEnabled={handleTranslateToggle} mode={mode} setMode={setMode} />
+                <ControlPanel
+                  translateEnabled={translateEnabled}
+                  setTranslateEnabled={handleTranslateToggle}
+                  mode={mode}
+                  setMode={setMode}
+                />
               </div>
             </Card>
           </div>
         </div>
       </div>
     </main>
-  )
+  );
 }
