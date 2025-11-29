@@ -14,8 +14,6 @@ try:
     VOSK_AVAILABLE = True
 except ImportError:
     VOSK_AVAILABLE = False
-    Model = None  # Dummy for type hints
-    KaldiRecognizer = None
     print("ERROR: Vosk not installed. Run: pip install vosk")
 
 # Configuration
@@ -33,7 +31,7 @@ app.add_middleware(
 )
 
 # Global model (loaded once at startup)
-vosk_model = None
+vosk_model: Optional[Model] = None
 
 def init_model():
     """Initialize Vosk model at startup."""
@@ -104,85 +102,92 @@ async def websocket_transcribe(ws: WebSocket):
     
     if vosk_model is None:
         logger.error("Model not loaded - cannot transcribe")
-        await ws.send_text(json.dumps({"error": "Vosk model not loaded."}))
+        await ws.send_text(json.dumps({
+            "error": "Vosk model not loaded. Check server logs."
+        }))
         await ws.close(code=1011)
         return
     
     # Create recognizer for this connection
     recognizer = KaldiRecognizer(vosk_model, SAMPLE_RATE)
-    recognizer.SetWords(False) # Optimization: Disable word timestamps for slightly faster partials
+    recognizer.SetWords(True)  # Get word-level timestamps
     
     logger.info("Recognizer created - ready for audio")
     
     bytes_received = 0
     last_partial_time = time.time()
-    # Send partials max every 0.05s (50ms) for ultra-fast visual feedback
-    partial_interval = 0.05 
+    partial_interval = 0.3  # Send partials every 300ms
     
     try:
         while True:
-            # 1. Receive Data (with timeout to allow heartbeat checks)
-            try:
-                # Wait briefly for new audio
-                msg = await asyncio.wait_for(ws.receive(), timeout=0.01)
-            except asyncio.TimeoutError:
-                # No audio received in 10ms? That's fine.
-                # Just yield control to Keep-Alive mechanism and continue
-                await asyncio.sleep(0) 
-                continue
+            msg = await ws.receive()
             
-            # 2. Process Data
             if msg["type"] == "websocket.receive":
                 if "bytes" in msg:
                     audio_chunk = msg["bytes"]
                     bytes_received += len(audio_chunk)
                     
-                    # BLOCKING CALL WARNING: AcceptWaveform is CPU bound (C++ Code).
-                    # It blocks the Python thread.
-                    # In a production app, we'd run this in a threadpool (run_in_executor).
-                    # For this demo, it's fast enough (~5ms), BUT we must yield immediately after.
+                    # Process audio chunk
                     if recognizer.AcceptWaveform(audio_chunk):
-                        # Final result
+                        # Final result for this utterance
                         result = json.loads(recognizer.Result())
                         text = result.get("text", "").strip()
+                        
                         if text:
-                            await ws.send_text(json.dumps({"final": text}))
+                            logger.info(f"Final: {text}")
+                            await ws.send_text(json.dumps({
+                                "final": text,
+                                "confidence": result.get("confidence", 1.0)
+                            }))
                     else:
-                        # Partial result check
+                        # Partial result (interim transcription)
                         current_time = time.time()
                         if current_time - last_partial_time >= partial_interval:
-                            partial_json = recognizer.PartialResult()
-                            partial = json.loads(partial_json)
+                            partial = json.loads(recognizer.PartialResult())
                             text = partial.get("partial", "").strip()
+                            
                             if text:
-                                await ws.send_text(json.dumps({"partial": text}))
+                                logger.debug(f"Partial: {text}")
+                                await ws.send_text(json.dumps({
+                                    "partial": text
+                                }))
+                            
                             last_partial_time = current_time
-                    
-                    # CRITICAL FIX: Yield control back to Event Loop immediately after CPU work
-                    # This allows Uvicorn to send PONG responses to PINGs.
-                    await asyncio.sleep(0)
                 
                 elif "text" in msg:
-                    # Handle EOS logic...
                     try:
                         data = json.loads(msg["text"])
+                        
                         if data.get("event") == "eos":
+                            logger.info("EOS received - finalizing")
+                            
+                            # Get final result from recognizer
                             final = json.loads(recognizer.FinalResult())
                             text = final.get("text", "").strip()
+                            
                             if text:
-                                await ws.send_text(json.dumps({"final": text, "eos": True}))
+                                logger.info(f"Final (EOS): {text}")
+                                await ws.send_text(json.dumps({
+                                    "final": text,
+                                    "eos": True
+                                }))
+                            
                             break
-                    except json.JSONDecodeError:
-                        pass
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON decode error: {e}")
             
             elif msg["type"] in ("websocket.disconnect", "websocket.close"):
+                logger.info("WebSocket disconnect signal")
                 break
     
     except WebSocketDisconnect:
         logger.info("Client disconnected")
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error during transcription: {e}", exc_info=True)
     finally:
+        logger.info(f"Session ended. Processed {bytes_received} bytes ({bytes_received/SAMPLE_RATE/2:.1f}s of audio)")
+        
         if ws.client_state.name != "DISCONNECTED":
             await ws.close()
 

@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import logging
@@ -14,14 +13,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-# --- Configuration (env or constants) ---
-SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000")) if "os" in globals() else 16000
+# --- Configuration ---
+SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 CHANNELS = 1
-CHUNK_DURATION = float(os.getenv("CHUNK_SECONDS", "0.5")) if "os" in globals() else 0.5
+CHUNK_DURATION = float(os.getenv("CHUNK_SECONDS", "0.5"))
 BLOCK_DURATION = CHUNK_DURATION
 DTYPE = "int16"
 
 TRANSCRIBE_WS_URL = os.getenv("TRANSCRIBE_WS_URL", "ws://localhost:8002/transcribe")
+CLASSIFIER_WS_URL = os.getenv("CLASSIFIER_WS_URL", "ws://localhost:8001/classify")
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [BRIDGE] [%(levelname)s] %(message)s")
@@ -53,16 +53,30 @@ async def send_to_react(message: str):
     if control_ws_ref and main_event_loop and control_ws_ref.client_state.name != "DISCONNECTED":
         asyncio.run_coroutine_threadsafe(control_ws_ref.send_text(message), main_event_loop)
 
-async def process_audio_block(block, ws_t):
-    try:
-        await ws_t.send(block.tobytes())
-        return True
-    except websockets.exceptions.ConnectionClosed:
-        logger.error("Transcriber connection closed while sending block")
+async def process_audio_block(block, ws_t, ws_c):
+    """Send audio block to BOTH transcriber and classifier"""
+    audio_bytes = block.tobytes()
+    
+    # Send to both services, but don't fail if one is slow
+    tasks = []
+    if ws_t:
+        tasks.append(ws_t.send(audio_bytes))
+    if ws_c:
+        tasks.append(ws_c.send(audio_bytes))
+    
+    if not tasks:
         return False
-    except Exception as e:
-        logger.error(f"Error sending block: {e}")
-        return False
+        
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Log errors but don't stop streaming unless both fail
+    errors = [r for r in results if isinstance(r, Exception)]
+    if errors:
+        for err in errors:
+            logger.warning(f"Audio send warning: {err}")
+    
+    # Only fail if ALL sends failed
+    return len(errors) < len(tasks)
 
 async def listen_to_transcriber(ws_t):
     """Forward transcriber messages to React."""
@@ -70,8 +84,21 @@ async def listen_to_transcriber(ws_t):
         async for msg in ws_t:
             await send_to_react(msg)
             logger.info(f"[Bridge] Forwarded transcript: {msg[:120]}")
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.warning(f"Transcriber connection closed: {e}")
     except Exception as e:
         logger.warning(f"Transcriber listener stopped: {e}")
+
+async def listen_to_classifier(ws_c):
+    """Forward classifier messages to React."""
+    try:
+        async for msg in ws_c:
+            await send_to_react(msg)
+            logger.info(f"[Bridge] Forwarded classification: {msg[:120]}")
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.warning(f"Classifier connection closed: {e}")
+    except Exception as e:
+        logger.warning(f"Classifier listener stopped: {e}")
 
 def mic_stream_thread_entry():
     asyncio.run(mic_stream_logic())
@@ -79,50 +106,87 @@ def mic_stream_thread_entry():
 async def mic_stream_logic():
     logger.info("Starting Microphone Stream Thread...")
     ws_t = None
+    ws_c = None
+    task_t = None
+    task_c = None
 
     try:
-        # Connect to transcriber
-        ws_t = await websockets.connect(TRANSCRIBE_WS_URL, max_size=None, ping_interval=20, ping_timeout=60)
+        # Connect to BOTH services with MUCH longer timeouts
+        ws_t = await websockets.connect(
+            TRANSCRIBE_WS_URL, 
+            max_size=None, 
+            ping_interval=None,  # Disable automatic pings from client side
+            ping_timeout=None,   # Disable ping timeout
+            close_timeout=10
+        )
         logger.info("Connected to Transcriber (8002).")
+        
+        ws_c = await websockets.connect(
+            CLASSIFIER_WS_URL, 
+            max_size=None, 
+            ping_interval=None, 
+            ping_timeout=None,
+            close_timeout=10
+        )
+        logger.info("Connected to Classifier (8001).")
 
-        # Start listener
+        # Start listeners for both
         task_t = asyncio.create_task(listen_to_transcriber(ws_t))
+        task_c = asyncio.create_task(listen_to_classifier(ws_c))
 
         # Start mic
         blocksize = int(SAMPLE_RATE * BLOCK_DURATION)
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, blocksize=blocksize, callback=audio_callback):
             logger.info("Microphone input started.")
+            
             while not stop_event.is_set():
                 try:
+                    # 1. Get the data
                     block = audio_q.get_nowait()
-                    success = await process_audio_block(block, ws_t)
+                    
+                    # 2. Send the data (Data Plane)
+                    success = await process_audio_block(block, ws_t, ws_c)
+                    
                     if not success:
-                        logger.error("Failed to send audio block, stopping stream")
+                        logger.error("Audio send failed. Stopping stream.")
                         break
+                    
+                    # 3. THE SMART FIX: Explicit Context Switch (Control Plane)
+                    # Force the loop to yield control. This allows the websocket library 
+                    # to process incoming Pings (Heartbeats) from the server immediately.
+                    await asyncio.sleep(0)
+                        
                 except queue.Empty:
+                    # If no audio, sleep a tiny bit to save CPU
                     await asyncio.sleep(0.01)
                 except Exception as e:
                     logger.error(f"Stream loop error: {e}")
                     break
 
-        # Send EOS on stop
+        # Send EOS to transcriber (if still connected)
         logger.info("Sending EOS to transcriber...")
         try:
-            await ws_t.send(json.dumps({"event": "eos"}))
-        except Exception:
-            pass
+            if ws_t:
+                await ws_t.send(json.dumps({"event": "eos"}))
+        except Exception as e:
+            logger.warning(f"Failed to send EOS: {e}")
 
-        task_t.cancel()
-        await asyncio.gather(task_t, return_exceptions=True)
+        # Cancel listeners
+        if task_t:
+            task_t.cancel()
+        if task_c:
+            task_c.cancel()
+        await asyncio.gather(task_t, task_c, return_exceptions=True)
 
     except Exception as e:
         logger.error(f"Critical mic thread error: {e}")
     finally:
-        if ws_t:
-            try:
-                await ws_t.close()
-            except Exception:
-                pass
+        for ws in [ws_t, ws_c]:
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
         logger.info("Microphone thread connections closed.")
         stop_event.clear()
 
